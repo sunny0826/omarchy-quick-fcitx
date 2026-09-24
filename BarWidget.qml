@@ -26,6 +26,10 @@ BarWidget {
     ? (status.mode === "cn" ? "中" : "en")
     : "--"
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
+  // Optical centering: WidgetButton centers the font line box, but the CJK
+  // glyph paints high inside it (measured 1.5px above the bar's neighbours
+  // at device scale). The overlay label below shifts down by this nudge.
+  readonly property real labelNudgeY: (root.bar && root.bar.vertical) ? 0 : 0.25
 
   function localPath(url) {
     var value = String(url || "")
@@ -200,6 +204,7 @@ BarWidget {
     horizontalMargin: 6
     active: root.status.ready === true && root.status.mode === "cn"
     useActiveColor: false
+    labelVisible: false
     tooltipText: root.status.ready === true
       ? (root.status.mode === "cn" ? "中文 · " + root.status.inputMethod : "英文 · " + root.status.inputMethod)
         + "\n点击打开管理面板，轻点左 Shift 快速切换"
@@ -207,6 +212,22 @@ BarWidget {
 
     onPressed: function(buttonCode) {
       root.togglePanel()
+    }
+
+    // Same label as the hidden native one, but positioned optically: nudged
+    // down so 中/en sit on the same visual centerline as neighbouring widgets.
+    Text {
+      id: overlayLabel
+      anchors.horizontalCenter: parent.horizontalCenter
+      y: Math.round((parent.height - height) / 2 + root.labelNudgeY)
+      text: root.label
+      textFormat: Text.PlainText
+      color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+      font.family: button.fontFamily
+      font.pixelSize: button.fontSize
+      renderType: Text.NativeRendering
+      horizontalAlignment: Text.AlignHCenter
+      verticalAlignment: Text.AlignVCenter
     }
   }
 }
