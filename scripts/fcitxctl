@@ -1,0 +1,523 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+#
+# fcitxctl — control helper for the sunny0826.quick-fcitx Omarchy plugin.
+# Reads and edits the user's fcitx5 state without hardcoding any input-method
+# name: Chinese/English candidates are resolved from the profile at runtime.
+#
+# Every path/command that touches the system can be overridden through
+# FCITXCTL_* environment variables so the unit tests can PATH-stub them.
+
+set -euo pipefail
+
+FCITX_REMOTE="${FCITXCTL_FCITX_REMOTE:-fcitx5-remote}"
+BUSCTL="${FCITXCTL_BUSCTL:-busctl}"
+SYSTEMCTL="${FCITXCTL_SYSTEMCTL:-systemctl}"
+FCITX5="${FCITXCTL_FCITX5:-fcitx5}"
+PROFILE="${FCITXCTL_PROFILE:-$HOME/.config/fcitx5/profile}"
+RIME_DIR="${FCITXCTL_RIME_DIR:-$HOME/.local/share/fcitx5/rime}"
+IM_DIR="${FCITXCTL_IM_DIR:-/usr/share/fcitx5/inputmethod}"
+
+FCITX_SERVICE="org.fcitx.Fcitx5"
+FCITX_PATH="/controller"
+FCITX_INTERFACE="org.fcitx.Fcitx.Controller1"
+OMARCHY_FCITX_UNIT="omarchy-fcitx5.service"
+
+die() {
+  printf 'fcitxctl: %s\n' "$*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "找不到命令：$1"
+}
+
+valid_im_name() {
+  [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]
+}
+
+# ---------------------------------------------------------------- fcitx state
+
+fcitx_running() {
+  "$FCITX_REMOTE" --check >/dev/null 2>&1
+}
+
+fcitx_state() {
+  local value
+  value="$("$FCITX_REMOTE" 2>/dev/null || true)"
+  case "$value" in
+    0|1|2) printf '%s\n' "$value" ;;
+    *) printf '0\n' ;;
+  esac
+}
+
+current_im() {
+  "$FCITX_REMOTE" -n 2>/dev/null || true
+}
+
+# cn|en|unknown for a (state, input-method) pair. State 0 means the focused
+# window has no input context; a keyboard-* method is English whatever the
+# activation state says.
+mode_for() {
+  local state="$1" im="$2"
+  if [[ $state == 0 ]]; then
+    printf 'unknown\n'
+  elif [[ $im == keyboard-* ]]; then
+    printf 'en\n'
+  elif [[ $state == 2 ]]; then
+    printf 'cn\n'
+  elif [[ $state == 1 ]]; then
+    printf 'en\n'
+  else
+    printf 'unknown\n'
+  fi
+}
+
+# -------------------------------------------------------------------- profile
+
+profile_items() {
+  [[ -f $PROFILE ]] || return 0
+  awk '
+    /^\[Groups\/[0-9]+\/Items\/[0-9]+\]$/ { want_name = 1; next }
+    /^\[/ { want_name = 0 }
+    want_name && /^Name=/ { sub(/^Name=/, ""); print; want_name = 0 }
+  ' "$PROFILE"
+}
+
+profile_default_im() {
+  [[ -f $PROFILE ]] || return 0
+  awk '
+    /^\[Groups\/[0-9]+\]$/ { in_group = 1; next }
+    /^\[/ { in_group = 0 }
+    in_group && /^DefaultIM=/ { sub(/^DefaultIM=/, ""); print; exit }
+  ' "$PROFILE"
+}
+
+# Chinese input-method candidate: group DefaultIM when it is not a keyboard
+# layout, otherwise the first non-keyboard item in the profile.
+profile_cn_im() {
+  local di name
+  di="$(profile_default_im || true)"
+  if [[ -n ${di:-} && $di != keyboard-* ]]; then
+    printf '%s\n' "$di"
+    return 0
+  fi
+  while IFS= read -r name; do
+    [[ -n $name && $name != keyboard-* ]] || continue
+    printf '%s\n' "$name"
+    return 0
+  done < <(profile_items)
+  return 1
+}
+
+# English input-method candidate: first keyboard-* item, keyboard-us fallback.
+profile_en_im() {
+  local name
+  while IFS= read -r name; do
+    [[ $name == keyboard-* ]] || continue
+    printf '%s\n' "$name"
+    return 0
+  done < <(profile_items)
+  printf 'keyboard-us\n'
+}
+
+backup_profile() {
+  [[ -f $PROFILE ]] || return 0
+  PROFILE_BACKUP="$PROFILE.bak.$(date +%Y%m%d%H%M%S)"
+  cp -p -- "$PROFILE" "$PROFILE_BACKUP"
+}
+
+# Profile edits must happen while fcitx5 is NOT running: fcitx5 only reads
+# the profile at startup and unconditionally serializes its in-memory copy on
+# shutdown, which would overwrite any write-then-restart (or write-then-reload
+# followed by a later restart) with the stale list. Invalid group items are
+# pruned at startup ("Group Item ... is not valid. Removed."), so an add is
+# verified over D-Bus afterwards and rolled back when fcitx5 rejected it.
+FCITX_STOPPED=0
+VERIFY_NEEDED=0
+PROFILE_BACKUP=""
+
+stop_for_edit() {
+  fcitx_running || return 0
+  if command -v "$SYSTEMCTL" >/dev/null 2>&1 \
+      && "$SYSTEMCTL" --user cat "$OMARCHY_FCITX_UNIT" >/dev/null 2>&1; then
+    "$SYSTEMCTL" --user stop "$OMARCHY_FCITX_UNIT" || die "无法停止 ${OMARCHY_FCITX_UNIT}"
+  else
+    "$FCITX_REMOTE" -e >/dev/null 2>&1 || die "无法退出 Fcitx5"
+  fi
+  FCITX_STOPPED=1
+  VERIFY_NEEDED=1
+}
+
+start_after_edit() {
+  (( FCITX_STOPPED == 1 )) || return 0
+  FCITX_STOPPED=0
+  if command -v "$SYSTEMCTL" >/dev/null 2>&1; then
+    "$SYSTEMCTL" --user start "$OMARCHY_FCITX_UNIT" || die "无法启动 ${OMARCHY_FCITX_UNIT}"
+  else
+    require_command "$FCITX5"
+    "$FCITX5" -d || die "无法启动 Fcitx5"
+  fi
+}
+
+profile_group_name() {
+  local g
+  g="$(profile_default_group || true)"
+  printf '%s\n' "${g:-Default}"
+}
+
+profile_default_group() {
+  [[ -f $PROFILE ]] || return 1
+  awk '
+    /^\[Groups\/[0-9]+\]$/ { in_group = 1; next }
+    /^\[/ { in_group = 0 }
+    in_group && /^Name=/ { sub(/^Name=/, ""); print; exit }
+  ' "$PROFILE"
+}
+
+dbus_group_info() {
+  "$BUSCTL" --user call "$FCITX_SERVICE" "$FCITX_PATH" "$FCITX_INTERFACE" \
+    InputMethodGroupInfo s "$1" 2>/dev/null
+}
+
+# Poll D-Bus until fcitx5 answers, then require the freshly added IM to be a
+# member of the group. A responsive fcitx5 without the IM means it pruned the
+# entry (missing data / unknown addon): restore the backup so file and
+# fcitx5's own persisted state stay consistent.
+verify_added_or_rollback() {
+  local group="$1" im="$2" i out
+  (( VERIFY_NEEDED == 1 )) || return 0
+  for i in 1 2 3 4 5 6 7 8; do
+    if out="$(dbus_group_info "$group")"; then
+      if [[ $out == *"\"$im\""* ]]; then return 0; fi
+      if [[ -n $PROFILE_BACKUP && -f $PROFILE_BACKUP ]]; then
+        cp -p -- "$PROFILE_BACKUP" "$PROFILE"
+      fi
+      die "fcitx5 拒绝了输入法 $im（数据缺失或未安装），已回滚 profile（备份：$PROFILE_BACKUP）"
+    fi
+    sleep 0.6
+  done
+  die "无法通过 D-Bus 验证 fcitx5（修改已保留，备份：$PROFILE_BACKUP）"
+}
+
+# Codes fcitx5 itself considers loadable, one per line. Entries whose data
+# files are missing never appear here (e.g. cangjie without table/ dicts).
+# Tuple layout: six quoted strings then a bare boolean, so codes sit at
+# quoted-token positions 1, 7, 13, ...
+dbus_valid_codes() {
+  local raw
+  raw="$("$BUSCTL" --user call "$FCITX_SERVICE" "$FCITX_PATH" "$FCITX_INTERFACE" \
+    AvailableInputMethods 2>/dev/null)" || return 1
+  printf '%s' "$raw" | grep -oE '"[^"]*"' | tr -d '"' | sed -n '1~6p'
+}
+
+# ------------------------------------------------------------------- commands
+
+status_command() {
+  require_command jq
+
+  local running=false ready=false mode=unknown state=0 im="" message
+
+  if fcitx_running; then
+    running=true
+    state="$(fcitx_state)"
+    im="$(current_im)"
+    mode="$(mode_for "$state" "$im")"
+    case "$mode" in
+      cn) ready=true; message="中文 · ${im}" ;;
+      en) ready=true; message="英文 · ${im}" ;;
+      *)  message="当前窗口没有可用的输入上下文" ;;
+    esac
+  else
+    if ! command -v "$FCITX_REMOTE" >/dev/null 2>&1; then
+      message="未安装 fcitx5-remote"
+    else
+      message="Fcitx5 未运行"
+    fi
+  fi
+
+  jq -cn \
+    --argjson ready "$ready" \
+    --arg mode "$mode" \
+    --argjson state "$state" \
+    --arg inputMethod "$im" \
+    --argjson fcitxRunning "$running" \
+    --arg message "$message" \
+    '{ready: $ready, mode: $mode, state: $state, inputMethod: $inputMethod,
+      fcitxRunning: $fcitxRunning, message: $message}'
+}
+
+set_cn_command() {
+  fcitx_running || die "Fcitx5 未运行"
+  local cn_im
+  cn_im="$(profile_cn_im || true)"
+  [[ -n $cn_im ]] || die "profile 中没有中文输入法，请先 profile-add"
+  # Best effort: without a focused input context fcitx5 may refuse the switch;
+  # the widget's next status refresh reports the truth either way.
+  "$FCITX_REMOTE" -s "$cn_im" >/dev/null 2>&1 || true
+  "$FCITX_REMOTE" -o >/dev/null 2>&1 || true
+}
+
+set_en_command() {
+  fcitx_running || die "Fcitx5 未运行"
+  local en_im
+  en_im="$(profile_en_im)"
+  "$FCITX_REMOTE" -s "$en_im" >/dev/null 2>&1 || true
+  "$FCITX_REMOTE" -c >/dev/null 2>&1 || true
+}
+
+toggle_command() {
+  fcitx_running || die "Fcitx5 未运行"
+  local state im mode
+  state="$(fcitx_state)"
+  im="$(current_im)"
+  mode="$(mode_for "$state" "$im")"
+  if [[ $mode == cn ]]; then
+    set_en_command
+  else
+    set_cn_command
+  fi
+}
+
+restart_command() {
+  if "$BUSCTL" --user call \
+      "$FCITX_SERVICE" \
+      "$FCITX_PATH" \
+      "$FCITX_INTERFACE" \
+      Restart >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # D-Bus service is down: recover through Omarchy's user unit, then the
+  # fcitx5 binary itself.
+  if command -v "$SYSTEMCTL" >/dev/null 2>&1 \
+      && "$SYSTEMCTL" --user cat "$OMARCHY_FCITX_UNIT" >/dev/null 2>&1; then
+    "$SYSTEMCTL" --user restart "$OMARCHY_FCITX_UNIT" \
+      || die "无法重启 ${OMARCHY_FCITX_UNIT}"
+    return 0
+  fi
+
+  require_command "$FCITX5"
+  "$FCITX5" -rd || die "无法重启 Fcitx5"
+}
+
+profile_list_command() {
+  require_command jq
+  [[ -f $PROFILE ]] || die "找不到 profile：$PROFILE"
+
+  local group default_im default_layout cn_im en_im names items_json
+  group="$(awk '
+    /^\[Groups\/0\]$/ { in_group = 1; next }
+    /^\[/ { in_group = 0 }
+    in_group && /^Name=/ { sub(/^Name=/, ""); print; exit }
+  ' "$PROFILE")"
+  default_im="$(profile_default_im || true)"
+  default_layout="$(awk '
+    /^\[Groups\/0\]$/ { in_group = 1; next }
+    /^\[/ { in_group = 0 }
+    in_group && /^Default Layout=/ { sub(/^Default Layout=/, ""); print; exit }
+  ' "$PROFILE")"
+  cn_im="$(profile_cn_im || true)" || cn_im=""
+  en_im="$(profile_en_im)"
+  names="$(profile_items)"
+  items_json="$(printf '%s\n' $names | jq -R -s 'split("\n") | map(select(length > 0))')"
+
+  jq -cn \
+    --arg path "$PROFILE" \
+    --arg group "$group" \
+    --arg defaultIM "$default_im" \
+    --arg defaultLayout "$default_layout" \
+    --arg cnIM "$cn_im" \
+    --arg enIM "$en_im" \
+    --argjson items "$items_json" \
+    '{path: $path, group: $group, defaultIM: $defaultIM,
+      defaultLayout: $defaultLayout, cnIM: $cnIM, enIM: $enIM, items: $items}'
+}
+
+profile_add_command() {
+  local im="${1:-}"
+  [[ -n $im ]] || die "用法：profile-add <input-method-id>"
+  valid_im_name "$im" || die "非法输入法 ID：$im"
+  [[ -f $PROFILE ]] || die "找不到 profile：$PROFILE"
+
+  if profile_items | grep -qxF -- "$im"; then
+    printf 'fcitxctl: %s 已在 profile 中\n' "$im"
+    return 0
+  fi
+
+  local nums max next tmp block
+  nums="$(grep -oE 'Items/[0-9]+' "$PROFILE" 2>/dev/null | grep -oE '[0-9]+' || true)"
+  max="$(printf '%s\n' $nums | sort -n | tail -1)"
+  [[ -n $max ]] || max=-1
+  next=$((max + 1))
+
+  tmp="$(mktemp "${PROFILE}.XXXXXX")"
+  block="$(printf '[Groups/0/Items/%s]\nName=%s\n' "$next" "$im")"
+
+  if grep -q '^\[GroupOrder\]$' "$PROFILE"; then
+    BLOCK="$block" awk '
+      /^\[GroupOrder\]$/ && !done { print ENVIRON["BLOCK"]; done = 1 }
+      { print }
+    ' "$PROFILE" > "$tmp"
+  else
+    { cat "$PROFILE"; printf '\n%s\n' "$block"; } > "$tmp"
+  fi
+
+  stop_for_edit
+  backup_profile
+  chmod --reference="$PROFILE" "$tmp" 2>/dev/null || true
+  mv "$tmp" "$PROFILE"
+  start_after_edit
+  verify_added_or_rollback "$(profile_group_name)" "$im"
+  printf 'fcitxctl: 已添加 %s\n' "$im"
+}
+
+profile_remove_command() {
+  local im="${1:-}"
+  [[ -n $im ]] || die "用法：profile-remove <input-method-id>"
+  valid_im_name "$im" || die "非法输入法 ID：$im"
+  [[ -f $PROFILE ]] || die "找不到 profile：$PROFILE"
+
+  local idx total new_default=""
+  total="$(profile_items | grep -c . || true)"
+  if ! profile_items | grep -qxF -- "$im"; then
+    printf 'fcitxctl: %s 不在 profile 中，无需移除\n' "$im"
+    return 0
+  fi
+  (( total > 1 )) || die "不能移除最后一个输入法"
+
+  idx="$(awk -v im="$im" '
+    /^\[/ { hdr = ($0 ~ /^\[Groups\/0\/Items\/[0-9]+\]$/) ? $0 : ""; next }
+    hdr != "" && $0 == "Name=" im {
+      s = hdr
+      sub(/^.*Items\//, "", s)
+      sub(/\]$/, "", s)
+      print s
+      exit
+    }
+  ' "$PROFILE")"
+  [[ -n $idx ]] || die "无法定位输入法段落：$im"
+
+  # If the removed method is the group default, point DefaultIM at the first
+  # remaining non-keyboard item (or the first item as a last resort).
+  if [[ "$(profile_default_im || true)" == "$im" ]]; then
+    new_default="$(profile_items | grep -vxF -- "$im" | grep -vE '^keyboard-' | head -1 || true)"
+    if [[ -z $new_default ]]; then
+      new_default="$(profile_items | grep -vxF -- "$im" | head -1 || true)"
+    fi
+  fi
+
+  local tmp
+  tmp="$(mktemp "${PROFILE}.XXXXXX")"
+  IDX="$idx" OLD="$im" NEW="${new_default:-}" awk '
+    $0 == "[Groups/0/Items/" ENVIRON["IDX"] "]" { skip = 1; next }
+    skip && /^\[/ { skip = 0 }
+    skip { next }
+    ENVIRON["NEW"] != "" && $0 == "DefaultIM=" ENVIRON["OLD"] { print "DefaultIM=" ENVIRON["NEW"]; next }
+    { print }
+  ' "$PROFILE" > "$tmp"
+
+  stop_for_edit
+  backup_profile
+  chmod --reference="$PROFILE" "$tmp" 2>/dev/null || true
+  mv "$tmp" "$PROFILE"
+  start_after_edit
+  printf 'fcitxctl: 已移除 %s\n' "$im"
+}
+
+available_command() {
+  require_command jq
+
+  local installed valid="" conf code name
+  local entries="[]"
+  installed="$(profile_items || true)"
+  # When fcitx5 is running, only offer what it can actually load: descriptors
+  # whose data files are missing (cangjie without table/ dicts, ...) are
+  # silently pruned from the group at the next start, so advertising them
+  # would set users up for a confusing rollback.
+  if fcitx_running; then
+    valid="$(dbus_valid_codes || true)"
+  fi
+
+  while IFS= read -r conf; do
+    [[ -n $conf ]] || continue
+    code="$(basename "$conf" .conf)"
+    if [[ -n $valid ]] && ! printf '%s\n' "$valid" | grep -qxF -- "$code"; then
+      continue
+    fi
+    name="$(awk -F= '/^Name=/{print $2; exit}' "$conf")"
+    [[ -n $name ]] || name="$code"
+    local is_installed=false
+    if printf '%s\n' "$installed" | grep -qxF -- "$code"; then
+      is_installed=true
+    fi
+    entries="$(jq -c --arg code "$code" --arg name "$name" --argjson installed "$is_installed" \
+      '. + [{code: $code, name: $name, installed: $installed}]' <<<"$entries")"
+  done < <(find "$IM_DIR" -maxdepth 1 -name '*.conf' -type f 2>/dev/null | sort)
+
+  local builtin_installed=false
+  if printf '%s\n' "$installed" | grep -qxF -- "keyboard-us"; then
+    builtin_installed=true
+  fi
+  entries="$(jq -c --argjson installed "$builtin_installed" \
+    '[{code: "keyboard-us", name: "Keyboard - US", installed: $installed}] + .' <<<"$entries")"
+
+  jq -cn --argjson entries "$entries" '{available: $entries}'
+}
+
+import_rime_command() {
+  local file="${1:-}"
+  [[ -n $file ]] || die "用法：import-rime <file>"
+  [[ -f $file ]] || die "文件不存在：$file"
+  [[ $file =~ \.(yaml|yml|bin)$ ]] || die "只支持 .yaml/.yml/.bin 文件：$file"
+
+  command -v pacman >/dev/null 2>&1 && pacman -Q fcitx5-rime >/dev/null 2>&1 \
+    || die "未安装 fcitx5-rime，请先在面板「安装引擎」中安装"
+
+  local base
+  base="$(basename "$file")"
+  [[ $base =~ ^[A-Za-z0-9._-]+$ ]] || die "非法文件名：$base"
+
+  mkdir -p "$RIME_DIR"
+  if [[ -e "$RIME_DIR/$base" ]]; then
+    cp -p -- "$RIME_DIR/$base" "$RIME_DIR/$base.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  cp -- "$file" "$RIME_DIR/$base"
+  printf 'fcitxctl: 已导入 %s 到 %s\n' "$base" "$RIME_DIR"
+  restart_command
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: fcitxctl COMMAND [ARG]
+
+Commands:
+  status            Print current fcitx5 state as JSON
+  set-cn            Switch to the profile's Chinese input method and activate
+  set-en            Switch to the English keyboard layout and deactivate
+  toggle            Toggle Chinese/English based on the current state
+  restart           Restart fcitx5 (D-Bus, then systemd unit, then binary)
+  profile-list      Print the input-method profile as JSON
+  profile-add <im>  Add an input method to the profile (atomic, backed up)
+  profile-remove <im>
+                    Remove an input method from the profile (atomic, backed up)
+  available         List installable input methods as JSON
+  import-rime <file>
+                    Import a Rime schema/dict file (.yaml/.yml/.bin)
+USAGE
+}
+
+case "${1:-}" in
+  status) status_command ;;
+  set-cn) set_cn_command ;;
+  set-en) set_en_command ;;
+  toggle) toggle_command ;;
+  restart) restart_command ;;
+  profile-list) profile_list_command ;;
+  profile-add) shift; profile_add_command "$@" ;;
+  profile-remove) shift; profile_remove_command "$@" ;;
+  available) available_command ;;
+  import-rime) shift; import_rime_command "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) usage >&2; exit 2 ;;
+esac

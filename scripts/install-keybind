@@ -1,0 +1,163 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+#
+# Idempotently install or remove the left-Shift tap-detection block in the
+# user's Hyprland bindings file. The block is fenced by markers this script
+# owns exclusively; nothing outside the markers is ever touched, and every
+# modification is backed up and rolled back automatically when Hyprland
+# reports configuration errors after reload.
+
+set -euo pipefail
+
+BEGIN_MARK="-- >>> sunny0826.quick-fcitx (managed) >>>"
+END_MARK="-- <<< sunny0826.quick-fcitx <<<"
+BINDINGS="${QUICK_FCITX_BINDINGS:-$HOME/.config/hypr/bindings.lua}"
+SKIP_RELOAD="${QUICK_FCITX_SKIP_RELOAD:-0}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FCITXCTL="$SCRIPT_DIR/fcitxctl"
+
+BACKUP=""
+
+die() {
+  printf 'install-keybind: %s\n' "$*" >&2
+  exit 1
+}
+
+build_block() {
+  cat <<BLOCK
+$BEGIN_MARK
+-- Left-Shift tap detection: keycode 50 pressed and released without any other
+-- key in between runs "fcitxctl toggle" (Chinese <-> English). Written by
+-- scripts/install-keybind; edit there, not here.
+if not _quick_fcitx_state then
+  _quick_fcitx_state = { down = false, tainted = false }
+  hl.on("input.keyboard.key", function(keycode, _, state)
+    if not _quick_fcitx_state then
+      _quick_fcitx_state = { down = false, tainted = false }
+    end
+    if keycode == 50 then
+      if state == 1 then
+        _quick_fcitx_state.down = true
+        _quick_fcitx_state.tainted = false
+      elseif _quick_fcitx_state.down then
+        _quick_fcitx_state.down = false
+        if not _quick_fcitx_state.tainted then
+          hl.exec_cmd("'$FCITXCTL' toggle")
+        end
+      end
+    elseif _quick_fcitx_state.down then
+      _quick_fcitx_state.tainted = true
+    end
+  end)
+end
+$END_MARK
+BLOCK
+}
+
+markers_intact() {
+  local begins ends
+  begins="$(grep -cF -- "$BEGIN_MARK" "$BINDINGS" || true)"
+  ends="$(grep -cF -- "$END_MARK" "$BINDINGS" || true)"
+  if (( begins > 0 || ends > 0 )) && (( begins != 1 || ends != 1 )); then
+    die "标记不完整（BEGIN=$begins END=$ends），请手动检查 $BINDINGS"
+  fi
+  (( begins == 1 ))
+}
+
+strip_block() {
+  # Remove exactly one BEGIN..END block (markers verified intact before call).
+  MARK="$BEGIN_MARK" ENDMARK="$END_MARK" awk '
+    $0 == ENVIRON["MARK"] { skip = 1; next }
+    skip && $0 == ENVIRON["ENDMARK"] { skip = 0; next }
+    skip { next }
+    { print }
+  ' "$1"
+}
+
+backup_bindings() {
+  BACKUP="$BINDINGS.bak.$(date +%Y%m%d%H%M%S)"
+  cp -p -- "$BINDINGS" "$BACKUP"
+}
+
+reload_hyprland() {
+  [[ $SKIP_RELOAD == 1 ]] && return 0
+  command -v hyprctl >/dev/null 2>&1 || return 0
+  hyprctl reload >/dev/null 2>&1 || true
+  sleep 0.5
+  local errors
+  errors="$(hyprctl configerrors 2>/dev/null || true)"
+  if [[ -n $errors ]]; then
+    if [[ -n $BACKUP && -f $BACKUP ]]; then
+      cp -p -- "$BACKUP" "$BINDINGS"
+      hyprctl reload >/dev/null 2>&1 || true
+      die "Hyprland 报告配置错误，已从备份回滚：$(head -3 <<<"$errors" | tr '\n' ' ')"
+    fi
+    die "Hyprland 报告配置错误：$(head -3 <<<"$errors" | tr '\n' ' ')"
+  fi
+}
+
+enable_block() {
+  [[ -f $BINDINGS ]] || die "找不到 $BINDINGS"
+  markers_intact || true   # die on corruption; ok when absent
+
+  local tmp
+  tmp="$(mktemp "${BINDINGS}.XXXXXX")"
+  if markers_intact; then
+    strip_block "$BINDINGS" > "$tmp"
+  else
+    cp -- "$BINDINGS" "$tmp"
+  fi
+  printf '\n%s\n' "$(build_block)" >> "$tmp"
+
+  backup_bindings
+  chmod --reference="$BINDINGS" "$tmp" 2>/dev/null || true
+  mv "$tmp" "$BINDINGS"
+  reload_hyprland
+  printf 'install-keybind: 左Shift 轻点切换已启用\n'
+}
+
+remove_block() {
+  [[ -f $BINDINGS ]] || die "找不到 $BINDINGS"
+  if ! markers_intact; then
+    printf 'install-keybind: 未启用，无需移除\n'
+    return 0
+  fi
+
+  local tmp
+  tmp="$(mktemp "${BINDINGS}.XXXXXX")"
+  strip_block "$BINDINGS" > "$tmp"
+  # Collapse the leading blank line the installer added, if now trailing.
+  backup_bindings
+  chmod --reference="$BINDINGS" "$tmp" 2>/dev/null || true
+  mv "$tmp" "$BINDINGS"
+  reload_hyprland
+  printf 'install-keybind: 已移除左Shift 轻点切换\n'
+}
+
+status_command() {
+  [[ -f $BINDINGS ]] || die "找不到 $BINDINGS"
+  if markers_intact; then
+    printf 'enabled\n'
+  else
+    printf 'disabled\n'
+  fi
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: install-keybind [--enable|--remove|--status]
+
+  --enable   Idempotently add the left-Shift tap block to bindings.lua
+  --remove   Remove the managed block (no-op when absent)
+  --status   Print "enabled" or "disabled"
+USAGE
+}
+
+case "${1:---enable}" in
+  --enable|"") enable_block ;;
+  --remove) remove_block ;;
+  --status) status_command ;;
+  -h|--help|help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

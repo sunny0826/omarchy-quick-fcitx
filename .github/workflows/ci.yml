@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure jq
+        run: command -v jq >/dev/null || (sudo apt-get update && sudo apt-get install -y jq)
+
+      - name: Fetch official Omarchy manifest validator
+        run: |
+          curl -fsSL -o /tmp/omarchy-plugin-validate \
+            https://raw.githubusercontent.com/omacom/omarchy/quattro/bin/omarchy-plugin-validate
+          chmod +x /tmp/omarchy-plugin-validate
+
+      - name: Validate manifest
+        run: /tmp/omarchy-plugin-validate .
+
+      - name: Run control-script tests
+        run: |
+          ./tests/fcitxctl-test.sh
+          ./tests/keybind-test.sh

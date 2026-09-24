@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "sunny0826.quick-fcitx",
+  "name": "Quick Fcitx",
+  "version": "0.1.0",
+  "author": "sunny0826",
+  "license": "MIT",
+  "description": "Bar widget that shows whether fcitx5 is in Chinese (中) or English (en), toggles it with a single left-Shift tap, and installs, imports, and manages fcitx5 input methods from a panel.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Quick Fcitx",
+    "description": "中/en fcitx5 state in the bar, left-Shift tap to switch Chinese/English, and a panel to switch, restart, install engines, import Rime schemas, and edit the input-method list.",
+    "category": "Input",
+    "aliases": ["fcitx", "fcitx5", "input-method", "ime"],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  },
+  "homepage": "https://github.com/sunny0826/omarchy-quick-fcitx",
+  "repository": "https://github.com/sunny0826/omarchy-quick-fcitx"
+}
