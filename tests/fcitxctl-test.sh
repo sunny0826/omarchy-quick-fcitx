@@ -280,18 +280,33 @@ T_RUNNING=0
 run_ctl toggle >/dev/null 2>&1 && rc=0 || rc=$?
 assert_ne 0 "$rc" "toggle without fcitx fails"
 
-# =========================================================== restart fallback
+# =========================================================== restart + readiness wait
 
-reset_stubs; write_base
-T_BUSCTL_RC=1
-run_ctl restart >/dev/null 2>&1
-assert_rc 0 $? "restart falls back to systemd"
-assert_log "--user restart omarchy-fcitx5.service" "restart uses omarchy unit"
-
+# Unit present (omarchy default): systemctl restart first, then block until
+# fcitx answers D-Bus again — the D-Bus path leaves the unit down for
+# RestartSec while callers already see success.
 reset_stubs; write_base
 run_ctl restart >/dev/null 2>&1
-assert_log "--user call org.fcitx.Fcitx5 /controller org.fcitx.Fcitx.Controller1 Restart" "restart uses D-Bus first"
-assert_log_absent "--user restart omarchy-fcitx5.service" "no systemd fallback when D-Bus works"
+assert_rc 0 $? "restart exits 0"
+assert_log "--user restart omarchy-fcitx5.service" "restart uses the systemd unit first"
+assert_log_absent "--user call org.fcitx.Fcitx5 /controller org.fcitx.Fcitx.Controller1 Restart" \
+  "systemctl path skips the D-Bus restart"
+grep -q 'InputMethodGroupInfo' "$STUB_LOG" && pass || fail "restart waits for D-Bus readiness"
+
+# No unit: D-Bus restart path, still waits for readiness.
+reset_stubs; write_base
+T_CAT_RC=1
+run_ctl restart >/dev/null 2>&1
+assert_rc 0 $? "restart without unit exits 0"
+assert_log "--user call org.fcitx.Fcitx5 /controller org.fcitx.Fcitx.Controller1 Restart" \
+  "D-Bus restart used when the unit is unavailable"
+grep -q 'InputMethodGroupInfo' "$STUB_LOG" && pass || fail "D-Bus restart waits for readiness too"
+
+# Nothing can restart fcitx: fail loudly.
+reset_stubs; write_base
+T_CAT_RC=1 T_BUSCTL_RC=1
+run_ctl restart >/dev/null 2>&1 && rc=0 || rc=$?
+assert_ne 0 "$rc" "restart fails loudly when no path is available"
 
 # =========================================================== profile-list
 
@@ -430,7 +445,7 @@ T_RIME_PKG=1
 run_ctl import-rime "$TMP/rime_custom.yaml" >/dev/null 2>&1
 assert_rc 0 $? "import-rime succeeds when rime installed"
 grep -q 'schema-data' "$RIME_DIR/rime_custom.yaml" && pass || fail "import-rime copied the file"
-assert_log "--user call org.fcitx.Fcitx5 /controller org.fcitx.Fcitx.Controller1 Restart" \
+assert_log "--user restart omarchy-fcitx5.service" \
   "import-rime restarts fcitx to redeploy"
 
 # overwriting an existing file keeps a backup

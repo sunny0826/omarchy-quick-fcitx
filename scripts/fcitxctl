@@ -279,26 +279,38 @@ toggle_command() {
   fi
 }
 
+# Wait until fcitx5 answers again. The D-Bus Restart path makes the unit
+# exit and systemd brings it back after RestartSec (2s here): callers that
+# return immediately let the user act against a dead fcitx — status reads
+# "not running" and engine switches silently fail until another restart.
+wait_fcitx_ready() {
+  local i
+  for ((i = 0; i < 12; i++)); do
+    if fcitx_running && dbus_group_info "$(profile_group_name)" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
 restart_command() {
-  if "$BUSCTL" --user call \
+  if command -v "$SYSTEMCTL" >/dev/null 2>&1 \
+      && "$SYSTEMCTL" --user cat "$OMARCHY_FCITX_UNIT" >/dev/null 2>&1; then
+    # systemctl restart first: deterministic and skips the D-Bus path's
+    # exit + RestartSec gap entirely.
+    "$SYSTEMCTL" --user restart "$OMARCHY_FCITX_UNIT" || die "无法重启 ${OMARCHY_FCITX_UNIT}"
+  elif "$BUSCTL" --user call \
       "$FCITX_SERVICE" \
       "$FCITX_PATH" \
       "$FCITX_INTERFACE" \
       Restart >/dev/null 2>&1; then
-    return 0
+    :
+  else
+    require_command "$FCITX5"
+    "$FCITX5" -rd || die "无法重启 Fcitx5"
   fi
-
-  # D-Bus service is down: recover through Omarchy's user unit, then the
-  # fcitx5 binary itself.
-  if command -v "$SYSTEMCTL" >/dev/null 2>&1 \
-      && "$SYSTEMCTL" --user cat "$OMARCHY_FCITX_UNIT" >/dev/null 2>&1; then
-    "$SYSTEMCTL" --user restart "$OMARCHY_FCITX_UNIT" \
-      || die "无法重启 ${OMARCHY_FCITX_UNIT}"
-    return 0
-  fi
-
-  require_command "$FCITX5"
-  "$FCITX5" -rd || die "无法重启 Fcitx5"
+  wait_fcitx_ready || die "fcitx5 未能在6秒内恢复，可再试一次重启"
 }
 
 profile_list_command() {
