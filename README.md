@@ -1,5 +1,7 @@
 # Quick Fcitx / 快速输入法
 
+![preview](preview.png)
+
 `sunny0826.quick-fcitx` — an [Omarchy](https://omarchy.org/) shell plugin that shows your fcitx5 input-method state in the bar, switches Chinese/English with a single left-Shift tap, and manages input methods from a panel.
 
 一个 [Omarchy](https://omarchy.org/) shell 插件：状态栏显示输入法 **中/en** 状态、**轻点左 Shift** 快速切换中英文、面板内**安装引擎 / 导入 Rime 方案 / 管理输入法列表**。

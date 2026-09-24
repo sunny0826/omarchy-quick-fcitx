@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "sunny0826.quick-fcitx",
   "name": "Quick Fcitx",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": "sunny0826",
   "license": "MIT",
   "description": "Bar widget that shows whether fcitx5 is in Chinese (中) or English (en), toggles it with a single left-Shift tap, and installs, imports, and manages fcitx5 input methods from a panel.",
