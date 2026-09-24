@@ -83,8 +83,8 @@ end
 
 ## Privileges / 提权说明
 
-The panel never runs `sudo` itself. Installing packages opens a visible terminal (`alacritty -e ...`) where you type your password; input-method list and Rime imports write only to `~/.config/fcitx5/profile` and `~/.local/share/fcitx5/rime/` with timestamped backups.
-面板自身不执行 sudo：装包会打开可见终端让你输密码；输入法列表与 Rime 导入只写 `~/.config/fcitx5/profile` 和 `~/.local/share/fcitx5/rime/`，写入前自动做时间戳备份。
+The plugin never invokes a privilege helper itself. Package installs open a visible terminal (launched via `omarchy-launch-terminal`) where the system asks for your password; input-method list and Rime imports write only to `~/.config/fcitx5/profile` and `~/.local/share/fcitx5/rime/` with timestamped backups.
+插件自身不调用任何提权命令：装包会打开可见终端（经 `omarchy-launch-terminal` 启动），由系统向你索要密码；输入法列表与 Rime 导入只写 `~/.config/fcitx5/profile` 和 `~/.local/share/fcitx5/rime/`，写入前自动做时间戳备份。
 
 ## Development / 开发
 
