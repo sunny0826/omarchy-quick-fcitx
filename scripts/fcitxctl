@@ -158,6 +158,10 @@ start_after_edit() {
     require_command "$FCITX5"
     "$FCITX5" -d || die "无法启动 Fcitx5"
   fi
+  # systemctl returns at exec; the D-Bus name lands a beat later. Waiting
+  # here keeps callers (panel refresh, status reads) from seeing a daemon
+  # that is technically up but not answering yet.
+  wait_fcitx_ready || die "fcitx5 启动后6秒内未就绪"
 }
 
 profile_group_name() {
