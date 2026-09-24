@@ -32,6 +32,7 @@ Panel {
   property bool actionBusy: false
   property bool keybindBusy: false
   property bool showAddList: false
+  property bool showInstallList: false
   property string errorText: ""
   property string noticeText: ""
   property var pendingArgs: []
@@ -286,107 +287,119 @@ Panel {
         else if (text === "r" || text === "R") root.beginAction(["restart"], "已重启 Fcitx5")
       }
 
-      Column {
-        id: content
-        width: parent.width
-        spacing: Style.space(6)
+      // Scroll instead of clipping when content is taller than the fitted
+      // card — without this the bottom sections sit off-screen and can
+      // never be reached (the official long panels do the same).
+      Flickable {
+        id: panelScroll
+        anchors.fill: parent
+        contentWidth: content.width
+        contentHeight: content.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        interactive: contentHeight > height || contentWidth > width
 
-        // ------------------------------------------------------- status row
-        RowLayout {
-          width: parent.width
-          spacing: Style.space(8)
+        Column {
+          id: content
+          width: panelScroll.width
+          spacing: Style.space(6)
 
-          Text {
-            id: modeText
-            text: root.modeLabel
-            color: root.isCn ? root.accent : root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            font.bold: true
-            Layout.alignment: Qt.AlignVCenter
-          }
-
-          Text {
-            Layout.fillWidth: true
-            Layout.alignment: Qt.AlignVCenter
-            text: root.status.message || ""
-            elide: Text.ElideRight
-            color: root.foreground
-            opacity: 0.7
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            verticalAlignment: Text.AlignVCenter
-          }
-
-          PanelActionButton {
-            id: restartBtn
-            Layout.alignment: Qt.AlignVCenter
-            iconText: "↻"
-            tooltipText: "重启 Fcitx5"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            enabled: root.canAct
-            onClicked: root.beginAction(["restart"], "已重启 Fcitx5")
-          }
-        }
-
-        PanelSeparator { width: parent.width; foreground: root.foreground }
-
-        // -------------------------------------------------- input method list
-        PanelSectionHeader {
-          width: parent.width
-          text: "输入法 · " + (root.profile.group || "-")
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-        }
-
-        Repeater {
-          model: root.profile.items
-
+          // ------------------------------------------------------- status row
           RowLayout {
-            width: content.width
-            height: Style.space(30)
+            width: parent.width
             spacing: Style.space(8)
+
+            Text {
+              id: modeText
+              text: root.modeLabel
+              color: root.isCn ? root.accent : root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              font.bold: true
+              Layout.alignment: Qt.AlignVCenter
+            }
 
             Text {
               Layout.fillWidth: true
               Layout.alignment: Qt.AlignVCenter
-              text: root.itemLabel(modelData)
+              text: root.status.message || ""
               elide: Text.ElideRight
               color: root.foreground
+              opacity: 0.7
               font.family: root.fontFamily
-              font.pixelSize: Style.font.body
+              font.pixelSize: Style.font.caption
               verticalAlignment: Text.AlignVCenter
             }
 
             PanelActionButton {
-              id: delBtn
+              id: restartBtn
               Layout.alignment: Qt.AlignVCenter
-              iconText: "✕"
-              tooltipText: "从配置组移除"
+              iconText: "↻"
+              tooltipText: "重启 Fcitx5"
               foreground: root.foreground
               fontFamily: root.fontFamily
-              enabled: root.profile.items.length > 1 && !root.actionBusy
-              onClicked: root.beginAction(["profile-remove", modelData], "已移除 " + modelData)
+              enabled: root.canAct
+              onClicked: root.beginAction(["restart"], "已重启 Fcitx5")
             }
           }
-        }
 
-        Button {
-          width: parent.width
-          text: root.showAddList ? "− 收起添加列表" : "+ 添加输入法"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: root.showAddList = !root.showAddList
-        }
+          PanelSeparator { width: parent.width; foreground: root.foreground }
 
-        Column {
-          width: parent.width
-          spacing: Style.space(4)
-          visible: root.showAddList
+          // -------------------------------------------------- input method list
+          PanelSectionHeader {
+            width: parent.width
+            text: "输入法 · " + (root.profile.group || "-")
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
 
           Repeater {
-            model: root.addCandidates
+            model: root.profile.items
+
+            RowLayout {
+              width: content.width
+              height: Style.space(30)
+              spacing: Style.space(8)
+
+              Text {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignVCenter
+                text: root.itemLabel(modelData)
+                elide: Text.ElideRight
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                verticalAlignment: Text.AlignVCenter
+              }
+
+              PanelActionButton {
+                id: delBtn
+                Layout.alignment: Qt.AlignVCenter
+                iconText: "✕"
+                tooltipText: "从配置组移除"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                enabled: root.profile.items.length > 1 && !root.actionBusy
+                onClicked: root.beginAction(["profile-remove", modelData], "已移除 " + modelData)
+              }
+            }
+          }
+
+          Button {
+            width: parent.width
+            text: root.showAddList ? "− 收起添加列表" : "+ 添加输入法"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.showAddList = !root.showAddList
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(4)
+            visible: root.showAddList
+
+            Repeater {
+              model: root.addCandidates
 
               RowLayout {
                 width: content.width
@@ -397,204 +410,171 @@ Panel {
                   Layout.fillWidth: true
                   Layout.alignment: Qt.AlignVCenter
                   text: modelData.name + "（" + modelData.code + "）"
-                elide: Text.ElideRight
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.body
-                verticalAlignment: Text.AlignVCenter
-              }
+                  elide: Text.ElideRight
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  verticalAlignment: Text.AlignVCenter
+                }
 
-              PanelActionButton {
-                id: addBtn
-                Layout.alignment: Qt.AlignVCenter
-                iconText: "+"
-                tooltipText: "加入当前配置组"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                enabled: root.canAct
-                onClicked: root.beginAction(["profile-add", modelData.code], "已添加 " + modelData.code)
+                PanelActionButton {
+                  id: addBtn
+                  Layout.alignment: Qt.AlignVCenter
+                  iconText: "+"
+                  tooltipText: "加入当前配置组"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  enabled: root.canAct
+                  onClicked: root.beginAction(["profile-add", modelData.code], "已添加 " + modelData.code)
+                }
               }
             }
           }
 
-          Text {
+          PanelSeparator { width: parent.width; foreground: root.foreground }
+
+          // ---------------------------------------------------- engine install
+          Button {
             width: parent.width
-            visible: root.addCandidates.length === 0
-            text: "没有更多可添加的输入法；先在下方「安装引擎」安装。"
-            color: root.foreground
-            opacity: 0.7
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
+            text: root.showInstallList ? "− 安装引擎" : "+ 安装引擎"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.showInstallList = !root.showInstallList
           }
-        }
 
-        PanelSeparator { width: parent.width; foreground: root.foreground }
+          Column {
+            width: parent.width
+            spacing: Style.space(4)
+            visible: root.showInstallList
 
-        // ---------------------------------------------------- engine install
-        PanelSectionHeader {
-          width: parent.width
-          text: "安装引擎"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-        }
+            Repeater {
+              model: root.enginePkgs
 
-        Repeater {
-          model: root.enginePkgs
+              RowLayout {
+                width: content.width
+                height: Style.space(30)
+                spacing: Style.space(8)
+
+                Text {
+                  Layout.fillWidth: true
+                  Layout.alignment: Qt.AlignVCenter
+                  text: modelData.label + "（" + modelData.pkg + "）"
+                  elide: Text.ElideRight
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  verticalAlignment: Text.AlignVCenter
+                }
+
+                Text {
+                  id: stateLabel
+                  Layout.alignment: Qt.AlignVCenter
+                  visible: root.installedPkgs[modelData.pkg] === true
+                  text: "已安装"
+                  color: root.accent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  verticalAlignment: Text.AlignVCenter
+                }
+
+                Button {
+                  id: installBtn
+                  Layout.alignment: Qt.AlignVCenter
+                  visible: !root.installedPkgs[modelData.pkg]
+                  text: "安装"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.installEngine(modelData.pkg)
+                }
+              }
+            }
+          }
+
+          PanelSeparator { width: parent.width; foreground: root.foreground }
+
+          // ------------------------------------------------------- rime import
+          PanelSectionHeader {
+            width: parent.width
+            text: "导入 Rime 方案"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
 
           RowLayout {
-            width: content.width
-            height: Style.space(30)
+            width: parent.width
+            spacing: Style.space(8)
+
+            TextField {
+              id: pathField
+              Layout.fillWidth: true
+              foreground: root.foreground
+              accent: root.accent
+              font.pixelSize: Style.font.caption
+              placeholderText: "路径，如 ~/rime/foo.custom.yaml"
+            }
+
+            Button {
+              id: importBtn
+              Layout.alignment: Qt.AlignVCenter
+              text: "导入"
+              enabled: !root.actionBusy && pathField.text.length > 0 && root.canAct
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.beginAction(["import-rime", pathField.text.trim()], "已导入 Rime 方案")
+            }
+          }
+
+          PanelSeparator { width: parent.width; foreground: root.foreground }
+
+          // ---------------------------------------------------- left-shift key
+          RowLayout {
+            width: parent.width
             spacing: Style.space(8)
 
             Text {
               Layout.fillWidth: true
               Layout.alignment: Qt.AlignVCenter
-              text: modelData.label + "（" + modelData.pkg + "）"
-              elide: Text.ElideRight
+              text: "轻点左 Shift 切换中英文"
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
               verticalAlignment: Text.AlignVCenter
             }
 
-            Text {
-              id: stateLabel
+            ToggleSwitch {
+              id: keybindToggle
               Layout.alignment: Qt.AlignVCenter
-              visible: root.installedPkgs[modelData.pkg] === true
-              text: "已安装"
-              color: root.accent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              verticalAlignment: Text.AlignVCenter
-            }
-
-            Button {
-              id: installBtn
-              Layout.alignment: Qt.AlignVCenter
-              visible: !root.installedPkgs[modelData.pkg]
-              text: "安装"
+              checked: root.keybindOn
+              busy: root.keybindBusy
+              interactive: !root.keybindBusy && !root.actionBusy
               foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.caption
-              onClicked: root.installEngine(modelData.pkg)
+              accent: root.accent
+              onToggled: root.setKeybind(checked)
             }
           }
-        }
 
-        Text {
-          width: parent.width
-          text: "安装会在可见终端中执行 omarchy pkg add，需要输入你的密码。"
-          color: root.foreground
-          opacity: 0.7
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
-
-        PanelSeparator { width: parent.width; foreground: root.foreground }
-
-        // ------------------------------------------------------- rime import
-        PanelSectionHeader {
-          width: parent.width
-          text: "导入 Rime 方案"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-        }
-
-        RowLayout {
-          width: parent.width
-          spacing: Style.space(8)
-
-          TextField {
-            id: pathField
-            Layout.fillWidth: true
-            foreground: root.foreground
-            accent: root.accent
+          // ------------------------------------------------------- feedback row
+          Text {
+            width: parent.width
+            visible: root.errorText !== ""
+            text: root.errorText
+            color: root.urgent
+            font.family: root.fontFamily
             font.pixelSize: Style.font.caption
-            placeholderText: "路径，如 ~/rime/foo.custom.yaml"
+            wrapMode: Text.WordWrap
           }
-
-          Button {
-            id: importBtn
-            Layout.alignment: Qt.AlignVCenter
-            text: "导入"
-            enabled: !root.actionBusy && pathField.text.length > 0 && root.canAct
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            fontSize: Style.font.caption
-            onClicked: root.beginAction(["import-rime", pathField.text.trim()], "已导入 Rime 方案")
-          }
-        }
-
-        Text {
-          width: parent.width
-          text: "支持 .yaml / .yml / .bin，复制到 ~/.local/share/fcitx5/rime/ 并重启 Fcitx5 生效；需先安装 fcitx5-rime。"
-          color: root.foreground
-          opacity: 0.7
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
-
-        PanelSeparator { width: parent.width; foreground: root.foreground }
-
-        // ---------------------------------------------------- left-shift key
-        RowLayout {
-          width: parent.width
-          spacing: Style.space(8)
 
           Text {
-            Layout.fillWidth: true
-            Layout.alignment: Qt.AlignVCenter
-            text: "轻点左 Shift 切换中英文"
-            color: root.foreground
+            width: parent.width
+            visible: root.noticeText !== ""
+            text: root.noticeText
+            color: root.accent
             font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            verticalAlignment: Text.AlignVCenter
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
           }
-
-          ToggleSwitch {
-            id: keybindToggle
-            Layout.alignment: Qt.AlignVCenter
-            checked: root.keybindOn
-            busy: root.keybindBusy
-            interactive: !root.keybindBusy && !root.actionBusy
-            foreground: root.foreground
-            accent: root.accent
-            onToggled: root.setKeybind(checked)
-          }
-        }
-
-        Text {
-          width: parent.width
-          text: "单独按一下左 Shift 切换中/英，Shift+字母 打大写不受影响。启用时会向 ~/.config/hypr/bindings.lua 写入一个可随时移除的托管代码块。"
-          color: root.foreground
-          opacity: 0.7
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
-
-        // ------------------------------------------------------- feedback row
-        Text {
-          width: parent.width
-          visible: root.errorText !== ""
-          text: root.errorText
-          color: root.urgent
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
-
-        Text {
-          width: parent.width
-          visible: root.noticeText !== ""
-          text: root.noticeText
-          color: root.accent
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
         }
       }
     }
